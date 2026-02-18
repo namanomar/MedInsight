@@ -1,51 +1,43 @@
-"""
-MedInsight - Interactive CLI Chatbot
 
-A minimal command-line interface for querying the medical knowledge base.
-
-Usage:
-    python connect_llm_with_memory.py
-"""
 import sys
 
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
-from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
-from langchain_core.prompts import PromptTemplate
 
+from llm.ollama_client import get_ollama_llm
+from memory.vector_store import get_vector_store
+from prompts.rag_prompt import get_rag_prompt, validate_prompt
+from utils.helpers import format_sources, check_ollama_connection, setup_logging
 import config
+
+# Setup logging
+setup_logging()
 
 
 def build_qa_chain() -> RetrievalQA:
+    """Build RAG QA chain with Ollama and vector store"""
+    print("[INFO] Checking Ollama connection...")
+    if not check_ollama_connection(config.OLLAMA_BASE_URL):
+        print(f"[ERROR] Cannot connect to Ollama at {config.OLLAMA_BASE_URL}")
+        print("[INFO] Please ensure Ollama is running and the model is pulled:")
+        print(f"      ollama pull {config.LLM_MODEL_NAME}")
+        sys.exit(1)
+    
     print("[INFO] Loading embeddings...")
-    embeddings = HuggingFaceEmbeddings(model_name=config.EMBEDDING_MODEL)
-
+    vector_store = get_vector_store()
+    
     print("[INFO] Loading FAISS vector store...")
-    db = FAISS.load_local(
-        config.DB_FAISS_PATH,
-        embeddings,
-        allow_dangerous_deserialization=True,
-    )
-
-    print(f"[INFO] Loading LLM ({config.LLM_REPO_ID})...")
-    llm = HuggingFaceEndpoint(
-        repo_id=config.LLM_REPO_ID,
-        temperature=config.LLM_TEMPERATURE,
-        model_kwargs={
-            "token": config.HF_TOKEN,
-            "max_new_tokens": config.LLM_MAX_NEW_TOKENS,
-        },
-    )
-
-    prompt = PromptTemplate(
-        template=config.PROMPT_TEMPLATE,
-        input_variables=["context", "question"],
-    )
-
+    retriever = vector_store.get_retriever(top_k=config.RETRIEVER_TOP_K)
+    
+    print(f"[INFO] Loading LLM ({config.LLM_MODEL_NAME})...")
+    llm = get_ollama_llm()
+    
+    print("[INFO] Loading prompt template...")
+    prompt = get_rag_prompt(use_examples=config.USE_PROMPT_EXAMPLES)
+    
     return RetrievalQA.from_chain_type(
         llm=llm,
         chain_type="stuff",
-        retriever=db.as_retriever(search_kwargs={"k": config.RETRIEVER_TOP_K}),
+        retriever=retriever,
         return_source_documents=True,
         chain_type_kwargs={"prompt": prompt},
     )
@@ -54,6 +46,7 @@ def build_qa_chain() -> RetrievalQA:
 def main() -> None:
     print("=" * 60)
     print("  MedInsight - Medical Knowledge Chatbot (CLI)")
+    print(f"  Model: {config.LLM_MODEL_NAME} via Ollama")
     print("  Type 'exit' or press Ctrl+C to quit.")
     print("=" * 60)
 
@@ -79,18 +72,20 @@ def main() -> None:
             break
 
         try:
+            # Validate query
+            if len(query) > 1000:
+                print("[WARNING] Query is too long. Please keep it under 1000 characters.\n")
+                continue
+            
             response = qa_chain.invoke({"query": query})
-            print(f"\nAssistant: {response['result']}")
-
+            answer = response["result"]
+            
+            print(f"\nAssistant: {answer}")
+            
             sources = response.get("source_documents", [])
             if sources:
-                seen = set()
-                print("\nSources:")
-                for doc in sources:
-                    label = doc.metadata.get("source", "Unknown")
-                    if label not in seen:
-                        seen.add(label)
-                        print(f"  - {label}")
+                sources_text = format_sources(sources)
+                print(sources_text)
             print()
 
         except Exception as exc:

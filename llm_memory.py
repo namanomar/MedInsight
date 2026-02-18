@@ -1,26 +1,17 @@
-"""
-MedInsight - Data Ingestion Pipeline
 
-Loads PDF documents from the data/ directory, splits them into chunks,
-embeds them, and stores the resulting FAISS index in vectorstore/db_faiss/.
-
-Usage:
-    python llm_memory.py
-    python llm_memory.py --data path/to/pdfs --output vectorstore/db_faiss
-"""
 import argparse
 import sys
 from pathlib import Path
 
 from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
 
+from memory.vector_store import VectorStore
 import config
 
 
 def load_pdf_files(data_path: str) -> list:
+    """Load PDF files from directory"""
     path = Path(data_path)
     if not path.exists():
         print(f"[ERROR] Data directory '{data_path}' does not exist.")
@@ -38,6 +29,7 @@ def load_pdf_files(data_path: str) -> list:
 
 
 def create_chunks(documents: list) -> list:
+    """Split documents into chunks"""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=config.CHUNK_SIZE,
         chunk_overlap=config.CHUNK_OVERLAP,
@@ -48,14 +40,12 @@ def create_chunks(documents: list) -> list:
 
 
 def build_vectorstore(chunks: list, output_path: str) -> None:
+    """Build and save FAISS vector store"""
     print(f"[INFO] Loading embedding model '{config.EMBEDDING_MODEL}'...")
-    embeddings = HuggingFaceEmbeddings(model_name=config.EMBEDDING_MODEL)
-
+    vector_store = VectorStore(db_path=output_path)
+    
     print("[INFO] Building FAISS index (this may take a while)...")
-    db = FAISS.from_documents(chunks, embeddings)
-
-    Path(output_path).mkdir(parents=True, exist_ok=True)
-    db.save_local(output_path)
+    vector_store.save(chunks, output_path)
     print(f"[INFO] Vector store saved to '{output_path}'.")
 
 
