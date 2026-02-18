@@ -1,58 +1,101 @@
-import os
-
-from langchain_huggingface import HuggingFaceEndpoint
-from langchain_core.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-
-
-from dotenv import load_dotenv, find_dotenv
-load_dotenv(find_dotenv())
-
-HF_TOKEN=os.environ.get("HUGGING_FACE_TOKEN")
-HUGGINGFACE_REPO_ID="mistralai/Mistral-7B-Instruct-v0.3"
-
-def load_llm(huggingface_repo_id):
-    llm=HuggingFaceEndpoint(
-        repo_id=huggingface_repo_id,
-        temperature=0.5,
-        model_kwargs={"token":HF_TOKEN,
-                      "max_length":"512"}
-    )
-    return llm
-
-CUSTOM_PROMPT_TEMPLATE = """
-Use the pieces of information provided in the context to answer user's question.
-If you dont know the answer, just say that you dont know, dont try to make up an answer. 
-Dont provide anything out of the given context
-
-Context: {context}
-Question: {question}
-
-Start the answer directly. No small talk please.
 """
+MedInsight - Interactive CLI Chatbot
 
-def set_custom_prompt(custom_prompt_template):
-    prompt=PromptTemplate(template=custom_prompt_template, input_variables=["context", "question"])
-    return prompt
+A minimal command-line interface for querying the medical knowledge base.
 
+Usage:
+    python connect_llm_with_memory.py
+"""
+import sys
 
-DB_FAISS_PATH="vectorstore/db_faiss"
-embedding_model=HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-db=FAISS.load_local(DB_FAISS_PATH, embedding_model, allow_dangerous_deserialization=True)
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint
+from langchain_community.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain_core.prompts import PromptTemplate
 
-
-qa_chain=RetrievalQA.from_chain_type(
-    llm=load_llm(HUGGINGFACE_REPO_ID),
-    chain_type="stuff",
-    retriever=db.as_retriever(search_kwargs={'k':3}),
-    return_source_documents=True,
-    chain_type_kwargs={'prompt':set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)}
-)
+import config
 
 
-user_query=input("Write Query Here: ")
-response=qa_chain.invoke({'query': user_query})
-print("RESULT: ", response["result"])
-print("SOURCE DOCUMENTS: ", response["source_documents"])
+def build_qa_chain() -> RetrievalQA:
+    print("[INFO] Loading embeddings...")
+    embeddings = HuggingFaceEmbeddings(model_name=config.EMBEDDING_MODEL)
+
+    print("[INFO] Loading FAISS vector store...")
+    db = FAISS.load_local(
+        config.DB_FAISS_PATH,
+        embeddings,
+        allow_dangerous_deserialization=True,
+    )
+
+    print(f"[INFO] Loading LLM ({config.LLM_REPO_ID})...")
+    llm = HuggingFaceEndpoint(
+        repo_id=config.LLM_REPO_ID,
+        temperature=config.LLM_TEMPERATURE,
+        model_kwargs={
+            "token": config.HF_TOKEN,
+            "max_new_tokens": config.LLM_MAX_NEW_TOKENS,
+        },
+    )
+
+    prompt = PromptTemplate(
+        template=config.PROMPT_TEMPLATE,
+        input_variables=["context", "question"],
+    )
+
+    return RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=db.as_retriever(search_kwargs={"k": config.RETRIEVER_TOP_K}),
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": prompt},
+    )
+
+
+def main() -> None:
+    print("=" * 60)
+    print("  MedInsight - Medical Knowledge Chatbot (CLI)")
+    print("  Type 'exit' or press Ctrl+C to quit.")
+    print("=" * 60)
+
+    try:
+        qa_chain = build_qa_chain()
+    except Exception as exc:
+        print(f"[ERROR] Failed to initialise: {exc}")
+        sys.exit(1)
+
+    print("\n[READY] Ask your medical questions below.\n")
+
+    while True:
+        try:
+            query = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nGoodbye!")
+            break
+
+        if not query:
+            continue
+        if query.lower() in {"exit", "quit", "q"}:
+            print("Goodbye!")
+            break
+
+        try:
+            response = qa_chain.invoke({"query": query})
+            print(f"\nAssistant: {response['result']}")
+
+            sources = response.get("source_documents", [])
+            if sources:
+                seen = set()
+                print("\nSources:")
+                for doc in sources:
+                    label = doc.metadata.get("source", "Unknown")
+                    if label not in seen:
+                        seen.add(label)
+                        print(f"  - {label}")
+            print()
+
+        except Exception as exc:
+            print(f"[ERROR] {exc}\n")
+
+
+if __name__ == "__main__":
+    main()
